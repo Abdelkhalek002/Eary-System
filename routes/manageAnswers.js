@@ -1,61 +1,107 @@
 const router = require("express").Router();
-const conn = require("../db/dbConnection");
+const prisma = require("../db/prisma");
 const admin = require("../middleWare/admin");
-const util = require("util"); // helper
-const fs = require("fs");
 
-//DISPLAY All ANSWERS
-router.get('/answers', (req, res) =>{
-    conn.query("SELECT * FROM answers", (data, error) =>{
-        if(error){
-            res.json(error)
+// DISPLAY ALL ANSWERS
+router.get("/answers", async (req, res) => {
+    try {
+        const answers = await prisma.answer.findMany({
+            include: { question: true }
+        });
+
+        return res.status(200).json(answers);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// DISPLAY ANSWERS FOR A SPECIFIC QUESTION
+router.get("/:id/answers", async (req, res) => {
+    try {
+        const questionId = parseInt(req.params.id, 10);
+        if (isNaN(questionId)) {
+            return res.status(400).json({ msg: "invalid question id" });
         }
-    })
-})
 
-//DISPLAY SPECIFIC QUESTION ANSWERS
-router.get('/:id/answers', (req, res) =>{
-    const questionId = req.params.id;
-    conn.query("SELECT * FROM answers WHERE question_id = ?", questionId, (data, error) =>{
-        if(error){
-            res.json(error)
+        // Check if the question exists
+        const question = await prisma.question.findUnique({
+            where: { id: questionId }
+        });
+
+        if (!question) {
+            return res.status(404).json({ msg: "question not found !" });
         }
-    })
-})
 
-//CREATE ANSWER FOR SPECIFIC QUESTION
-router.post('/:id/createAnswer', async (req, res) =>{
-        const questionId = req.params.id;
-        const description = req.body.description
-        const priority = req.body.priority
-        const sql = "INSERT INTO answers (description, priority, question_id) VALUES (?, ?, ?)";
-        conn.query(sql, [description, priority, questionId], (err, result) =>{
-            if(err){
-                res.status(400).json(err)
-            }
-            else{
-                res.status(200).json({
-                    msg: "answer added"
-                })
-            }
-        })
-    })
+        const answers = await prisma.answer.findMany({
+            where: { question_id: questionId }
+        });
 
-//DELETE ANSWER FROM SPECIFIC QUESTION 
-router.delete(
-        "/removeAnswer/:id", 
-        async (req, res) => {
-            const query = util.promisify(conn.query).bind(conn);
-            const answer = await query("SELECT * FROM answers WHERE id = ?", [
-                req.params.id,
-            ]);
-            if (!answer[0]) {
-                res.status(404).json({ ms: "answer not found !" });
+        return res.status(200).json(answers);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// CREATE ANSWER FOR A SPECIFIC QUESTION
+router.post("/:id/answers", admin, async (req, res) => {
+    try {
+        const questionId = parseInt(req.params.id, 10);
+        if (isNaN(questionId)) {
+            return res.status(400).json({ msg: "invalid question id" });
+        }
+
+        // Check if the question exists
+        const question = await prisma.question.findUnique({
+            where: { id: questionId }
+        });
+
+        if (!question) {
+            return res.status(404).json({ msg: "question not found !" });
+        }
+
+        const newAnswer = await prisma.answer.create({
+            data: {
+                description: req.body.description,
+                priority: req.body.priority !== undefined ? parseInt(req.body.priority, 10) : 0,
+                question_id: questionId
             }
-            await query("DELETE FROM answers WHERE id = ?", [answer[0].id]);
-            res.status(200).json({
-                msg: "answer deleted successfully",
-            });
-})
+        });
+
+        return res.status(201).json({
+            msg: "answer added",
+            answer: newAnswer
+        });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// DELETE A SPECIFIC ANSWER
+router.delete("/answers/:id", admin, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+            return res.status(400).json({ msg: "invalid answer id" });
+        }
+
+        const existing = await prisma.answer.findUnique({
+            where: { id }
+        });
+
+        if (!existing) {
+            return res.status(404).json({ msg: "answer not found !" });
+        }
+
+        await prisma.answer.delete({
+            where: { id }
+        });
+
+        return res.status(200).json({
+            msg: "answer deleted successfully"
+        });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
 
 module.exports = router;

@@ -1,0 +1,54 @@
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id       Int      @id @default(autoincrement())
+  name     String   @db.VarChar(255)
+  email    String   @unique @db.VarChar(255)
+  password String   @db.VarChar(255)
+  phone    String?  @db.VarChar(20)
+  token    String?  @db.VarChar(255)
+  role     Int      @default(0)
+  status   Int      @default(1)
+  results  Result[]
+
+  @@map("users")
+}
+
+model Question {
+  id         Int      @id @default(autoincrement())
+  name       String   @db.VarChar(255)
+  audio_file String   @db.VarChar(255)
+  status     Int      @default(1)
+  answers    Answer[]
+
+  @@map("questions")
+}
+
+model Answer {
+  id          Int      @id @default(autoincrement())
+  description String   @db.Text
+  priority    Int      @default(0)
+  question_id Int
+  question    Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@index([question_id])
+  @@map("answers")
+}
+
+model Result {
+  id      Int      @id @default(autoincrement())
+  score   Float
+  date    DateTime @default(now())
+  user_id Int
+  user    User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("results")
+}

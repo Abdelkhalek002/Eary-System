@@ -1,152 +1,205 @@
 const router = require("express").Router();
-const conn = require("../db/dbConnection");
+const prisma = require("../db/prisma");
 const admin = require("../middleWare/admin");
-const authorized = require("../middleWare/authorize");
 const { body, validationResult } = require("express-validator");
 const upload = require("../middleWare/uploadAudio");
-const util = require("util"); // helper
 const fs = require("fs");
+const path = require("path");
 
+const formatAudioUrl = (req, filename) =>
+    `${req.protocol}://${req.get("host")}/${filename}`;
 
-// DISPLAY QUESTIONS
-router.get('/getQuestions', async (req, res) =>{
-    const query = util.promisify(conn.query).bind(conn);
-    const questions = await query("SELECT * FROM questions");
-    questions.map((question) =>{
-        question.audio_file = "http://" + req.hostname + ":4000/" + question.audio_file;
-    })
-    res.status(200).json(questions);
-})
+// DISPLAY ALL QUESTIONS
+router.get("/", async (req, res) => {
+    try {
+        const questions = await prisma.question.findMany({
+            include: { answers: true }
+        });
 
-//DISPLAY SPECIFIC QUESTION
-router.get('/question/:id', async (req, res) =>{
-    const {id} = req.params;
-    const query = util.promisify(conn.query).bind(conn);
-    const question = await query("SELECT * FROM questions WHERE id = ?", [id]);
-    if (!question[0]) {
-        res.status(404).json({ ms: "question not found !" });
+        const formatted = questions.map((question) => ({
+            ...question,
+            audio_file: formatAudioUrl(req, question.audio_file)
+        }));
+
+        return res.status(200).json(formatted);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
     }
-    question[0].audio_file = "http://" + req.hostname + ":4000/" + question[0].audio_file;
-    res.status(200).json(question[0])
-})
+});
 
-//CREATE NEW QUESTION
-router.post(
-        '/add',
-        admin,
-        upload.single("audio"),
-        body("name").isString(), async (req, res) =>{
-            // 1- VALIDATION REQUEST [manual, express validation]
-            const query = util.promisify(conn.query).bind(conn);
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                return res.status(400).json({ errors: errors.array() });
-            }
-            //2- VALIDATE THE AUDIO FILE
-            if(!req.file){
-                return res.status(400).json({
-                    errors: [
-                        {
-                            msg:"audio file is required"
-                        }
-                    ]
-                })
-            }
-            //3- SAVING INTO DB
-            const question = {
-                name: req.body.name,
-                audio_file: req.file.filename,
-                status: req.body.status
-            };
-            const sql = "INSERT INTO questions SET ?";
-            query(sql, question, (err, result) =>{
-                if(err){
-                    res.status(400).json(err)
-                }
-                else{
-                    res.status(200).json({
-                        msg: "question added"
-                    })
-                }
-            })
-        })
+// DISPLAY SPECIFIC QUESTION
+router.get("/:id", async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+            return res.status(400).json({ msg: "invalid question id" });
+        }
 
-//Update Question Data
-router.put(
-    '/update/:id',
-    admin,
-    upload.single("audio"),
-    body("name").isString(), async (req, res) =>{
-        try {
-        // 1- VALIDATION REQUEST [manual, express validation]
-        const query = util.promisify(conn.query).bind(conn);
-        const {id} = req.params;
+        const question = await prisma.question.findUnique({
+            where: { id },
+            include: { answers: true }
+        });
+
+        if (!question) {
+            return res.status(404).json({ msg: "question not found !" });
+        }
+
+        return res.status(200).json({
+            ...question,
+            audio_file: formatAudioUrl(req, question.audio_file)
+        });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// CREATE NEW QUESTION
+router.post("/", admin, upload.single("audio"), body("name").isString().withMessage("name is required"), async (req, res) => {
+    try {
+        // 1- VALIDATION REQUEST
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
+            if (req.file && fs.existsSync(req.file.path)) {
+                fs.unlinkSync(req.file.path);
+            }
             return res.status(400).json({ errors: errors.array() });
         }
 
-        // 2- CHECK IF QUESTION EXISTS OR NOT
-        const question = await query("SELECT * FROM questions WHERE id = ? ",
-        [id]
-        );
-        if(!question[0]){
-            res.status(404).json({ msg: "question not found!" })
-        }
-        
-
-         // 3- PREPARE QUESTION OBJECT
-        const questionObj = {
-            name: req.body.name,
-            status: req.body.status,
-        };
-        if (req.file) {
-            questionObj.audio_file = req.file.filename;
-            fs.unlinkSync("./upload/" + question[0].audio_file); // delete old audio
+        // 2- VALIDATE THE AUDIO FILE
+        if (!req.file) {
+            return res.status(400).json({
+                errors: [{ msg: "audio file is required" }]
+            });
         }
 
-        // 4- UPDATE QUESTION
-        await query("UPDATE questions SET ? WHERE id = ?", [questionObj, question[0].id]);
-        res.status(200).json({
-            msg: "question updated successfully",
+        // 3- SAVING INTO DB VIA PRISMA
+        const newQuestion = await prisma.question.create({
+            data: {
+                name: req.body.name,
+                audio_file: req.file.filename,
+                status: req.body.status !== undefined ? parseInt(req.body.status, 10) : 1
+            }
+        });
+
+        return res.status(201).json({
+            msg: "question added",
+            question: {
+                ...newQuestion,
+                audio_file: formatAudioUrl(req, newQuestion.audio_file)
+            }
         });
     } catch (err) {
-        res.status(500).json(err);
-    }
-    })
-
-//DELETE QUESTION
-router.delete(
-    "/remove/:id", // params
-    admin,
-    async (req, res) => {
-        try {
-        // 1- CHECK IF QUESTION EXISTS OR NOT
-        const query = util.promisify(conn.query).bind(conn);
-        const question = await query("SELECT * FROM questions WHERE id = ?", [
-            req.params.id,
-        ]);
-        if (!question[0]) {
-            res.status(404).json({ ms: "question not found !" });
+        if (req.file && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
         }
-        // 2- REMOVE QUESTION AUDIO
-        fs.unlinkSync("./upload/" + question[0].audio_file); // delete old audio
-        await query("DELETE FROM questions where id = ?", [question[0].id]);
-        res.status(200).json({
-            msg: "question deleted successfully",
-        });
-        } catch (err) {
-        res.status(500).json(err);
-        }
+        return res.status(500).json({ error: err.message });
     }
+}
 );
 
+// UPDATE QUESTION DATA
+router.put("/:id", admin, upload.single("audio"), body("name").optional().isString(), async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+            if (req.file && fs.existsSync(req.file.path)) {
+                fs.unlinkSync(req.file.path);
+            }
+            return res.status(400).json({ msg: "invalid question id" });
+        }
 
+        // 1- VALIDATION REQUEST
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            if (req.file && fs.existsSync(req.file.path)) {
+                fs.unlinkSync(req.file.path);
+            }
+            return res.status(400).json({ errors: errors.array() });
+        }
 
+        // 2- CHECK IF QUESTION EXISTS
+        const existing = await prisma.question.findUnique({
+            where: { id }
+        });
 
+        if (!existing) {
+            if (req.file && fs.existsSync(req.file.path)) {
+                fs.unlinkSync(req.file.path);
+            }
+            return res.status(404).json({ msg: "question not found!" });
+        }
 
+        // 3- PREPARE QUESTION UPDATE DATA
+        const updateData = {};
+        if (req.body.name) updateData.name = req.body.name;
+        if (req.body.status !== undefined) {
+            updateData.status = parseInt(req.body.status, 10);
+        }
 
+        if (req.file) {
+            updateData.audio_file = req.file.filename;
+            const oldFilePath = path.join("./upload", existing.audio_file);
+            if (fs.existsSync(oldFilePath)) {
+                fs.unlinkSync(oldFilePath);
+            }
+        }
 
+        // 4- UPDATE IN DB VIA PRISMA
+        const updated = await prisma.question.update({
+            where: { id },
+            data: updateData
+        });
 
+        return res.status(200).json({
+            msg: "question updated successfully",
+            question: {
+                ...updated,
+                audio_file: formatAudioUrl(req, updated.audio_file)
+            }
+        });
+    } catch (err) {
+        if (req.file && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        return res.status(500).json({ error: err.message });
+    }
+}
+);
+
+// DELETE QUESTION
+router.delete("/:id", admin, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+            return res.status(400).json({ msg: "invalid question id" });
+        }
+
+        // 1- CHECK IF QUESTION EXISTS
+        const existing = await prisma.question.findUnique({
+            where: { id }
+        });
+
+        if (!existing) {
+            return res.status(404).json({ msg: "question not found !" });
+        }
+
+        // 2- REMOVE QUESTION AUDIO FILE IF PRESENT
+        const filePath = path.join("./upload", existing.audio_file);
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+        }
+
+        // 3- DELETE QUESTION (Cascades to related answers in database)
+        await prisma.question.delete({
+            where: { id }
+        });
+
+        return res.status(200).json({
+            msg: "question deleted successfully"
+        });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
 
 module.exports = router;

@@ -1,17 +1,36 @@
-const conn = require("../db/dbConnection");
-const util = require("util");
+const prisma = require("../db/prisma");
 
-const Authorized = async (req, res, next) =>{
-    const query = util.promisify(conn.query).bind(conn);
-    const {token} = req.headers;
-    const user = await query("SELECT * FROM users WHERE token = ?",[token])
-    if(user[0]){
-        next();
-    }else{
-        res.status(403).json({
-            msg: "you are not authorized to access this route !"
-        })
+const Authorized = async (req, res, next) => {
+    try {
+        let token = req.headers.token;
+        const authHeader = req.headers.authorization;
+
+        // Extract from "Authorization: Bearer <token>"
+        if (authHeader && authHeader.startsWith("Bearer")) {
+            token = authHeader.split(" ")[1];
+        }
+
+        if (!token) {
+            return res.status(401).json({
+                msg: "Authentication token missing! Please send a Bearer token in the Authorization header."
+            });
+        }
+
+        const user = await prisma.user.findFirst({
+            where: { token }
+        });
+
+        if (user) {
+            req.user = user;
+            next();
+        } else {
+            return res.status(403).json({
+                msg: "you are not authorized to access this route !"
+            });
+        }
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
     }
-}
+};
 
 module.exports = Authorized;
