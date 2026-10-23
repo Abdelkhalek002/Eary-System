@@ -47,9 +47,34 @@ router.post("/saveAnswers/:id", authorized, async (req, res) => {
             return res.status(404).json({ msg: "user not found !" });
         }
 
-        const score = parseFloat(req.body.score);
-        if (isNaN(score)) {
-            return res.status(400).json({ msg: "score is required and must be a number" });
+        let score = 0;
+        if (req.body.answers) {
+            let answerIds = [];
+            if (Array.isArray(req.body.answers)) {
+                answerIds = req.body.answers.map(a => (typeof a === "object" ? a.answer_id || a.id : a));
+            } else if (typeof req.body.answers === "object") {
+                answerIds = Object.values(req.body.answers);
+            }
+            const numericAnswerIds = answerIds
+                .map(ansId => parseInt(ansId, 10))
+                .filter(ansId => !isNaN(ansId));
+
+            if (numericAnswerIds.length > 0) {
+                const correctCount = await prisma.answer.count({
+                    where: {
+                        id: { in: numericAnswerIds },
+                        priority: 99
+                    }
+                });
+                score = correctCount;
+            }
+        } else if (req.body.score !== undefined) {
+            score = parseFloat(req.body.score);
+            if (isNaN(score)) {
+                return res.status(400).json({ msg: "score is required and must be a number" });
+            }
+        } else {
+            return res.status(400).json({ msg: "answers or score is required" });
         }
 
         const newResult = await prisma.result.create({
@@ -61,7 +86,8 @@ router.post("/saveAnswers/:id", authorized, async (req, res) => {
 
         return res.status(201).json({
             msg: "new result added successfully",
-            result: newResult
+            result: newResult,
+            score: newResult.score
         });
     } catch (err) {
         return res.status(500).json({ error: err.message });
